@@ -5,10 +5,10 @@ use base64::{
     engine::{self, general_purpose},
     Engine as _,
 };
-use pallas_crypto::kes::KesSecretKey;
 use pallas_crypto::key::ed25519::SecretKey;
 use pallas_crypto::vrf::VrfSecretKey;
 use pallas_crypto::{hash::Hash, vrf::VrfSecretKeyBytes};
+use pallas_crypto::{kes::KesSecretKey, vrf::VRF_SECRET_KEY_SIZE};
 use pallas_traverse::MultiEraHeader;
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -30,7 +30,7 @@ struct GeneratorContext {
     #[serde(deserialize_with = "deserialize_nonce")]
     nonce: [u8; 32],
     #[serde(rename = "ocertCounters")]
-    operational_certificate_counters: HashMap<Hash<32>, u64>,
+    operational_certificate_counters: HashMap<Hash<28>, u64>,
 }
 
 impl std::fmt::Debug for GeneratorContext {
@@ -63,7 +63,7 @@ impl KesKeyWrapper {
     }
 }
 
-fn deserialize_secret_kes_key<'a, 'de, D>(deserializer: D) -> Result<KesKeyWrapper, D::Error>
+fn deserialize_secret_kes_key<'de, D>(deserializer: D) -> Result<KesKeyWrapper, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -74,7 +74,7 @@ where
     Ok(KesKeyWrapper { bytes })
 }
 
-fn deserialize_secret_ed25519_key<'a, 'de, D>(deserializer: D) -> Result<SecretKey, D::Error>
+fn deserialize_secret_ed25519_key<'de, D>(deserializer: D) -> Result<SecretKey, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -88,7 +88,7 @@ where
     Ok(bytes.into())
 }
 
-fn deserialize_secret_vrf_key<'a, 'de, D>(deserializer: D) -> Result<VrfSecretKey, D::Error>
+fn deserialize_secret_vrf_key<'de, D>(deserializer: D) -> Result<VrfSecretKey, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -96,8 +96,12 @@ where
     let decoded = general_purpose::STANDARD
         .decode(buf)
         .map_err(serde::de::Error::custom)?;
+    let num_bytes = decoded.len();
     let bytes: VrfSecretKeyBytes = decoded.try_into().map_err(|e| {
-        serde::de::Error::custom(format!("cannot convert vector to secret vrf key: {:?}", e))
+        serde::de::Error::custom(format!(
+            "cannot convert vector to secret vrf key (len = {}, expected = {}): {:?}",
+            num_bytes, VRF_SECRET_KEY_SIZE, e
+        ))
     })?;
     Ok((&bytes).into())
 }
@@ -134,7 +138,7 @@ impl HeaderWrapper {
     }
 }
 
-fn deserialize_header<'a, 'de, D>(deserializer: D) -> Result<HeaderWrapper, D::Error>
+fn deserialize_header<'de, D>(deserializer: D) -> Result<HeaderWrapper, D::Error>
 where
     D: Deserializer<'de>,
 {
