@@ -97,13 +97,20 @@ where
         .decode(buf)
         .map_err(serde::de::Error::custom)?;
     let num_bytes = decoded.len();
-    let bytes: VrfSecretKeyBytes = decoded.try_into().map_err(|e| {
+    // FIXME: in the Haskell side, the signing key also contains the verification key which means
+    // its serialised length its 64 bytes: https://github.com/IntersectMBO/cardano-base/blob/master/cardano-crypto-praos/src/Cardano/Crypto/VRF/Praos.hs#L134
+    // with the signing key part on the first half and the verification key part on the
+    // second half.
+    // fixing Haskell side is annoying because it uses C FFI and only manipulate keys
+    // through opaque pointers.
+    let bytes: [u8; 64] = decoded.try_into().map_err(|e| {
         serde::de::Error::custom(format!(
-            "cannot convert vector to secret vrf key (len = {}, expected = {}): {:?}",
-            num_bytes, VRF_SECRET_KEY_SIZE, e
+            "cannot convert vector to secret vrf key (len = {}): {:?}",
+            num_bytes, e
         ))
     })?;
-    Ok((&bytes).into())
+    let skbytes: VrfSecretKeyBytes = bytes[0..32].try_into().map_err(serde::de::Error::custom)?;
+    Ok((&skbytes).into())
 }
 
 fn deserialize_nonce<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
@@ -142,7 +149,7 @@ fn deserialize_header<'de, D>(deserializer: D) -> Result<HeaderWrapper, D::Error
 where
     D: Deserializer<'de>,
 {
-    let buf = <&str>::deserialize(deserializer)?;
+    let buf = <String>::deserialize(deserializer)?;
     let bytes = general_purpose::STANDARD
         .decode(buf)
         .map_err(serde::de::Error::custom)?;
@@ -165,8 +172,11 @@ fn can_read_and_write_json_test_vectors() {
     let file = File::open("tests/data/test-vector.json").unwrap();
     let result: Result<Vec<(GeneratorContext, MutatedHeader)>, serde_json::Error> =
         serde_json::from_reader(BufReader::new(file));
-    println!("result {:?}", result);
     assert!(result.is_ok());
+    let mut vec = result.unwrap();
+    let first_header = vec[0].1.header.get_header().expect("cannot create header");
+    let babbage_header = first_header.as_babbage().expect("Infallible");
+    assert_eq!(babbage_header.header_body.slot, 6217870661159068565u64);
 }
 
 #[test]
