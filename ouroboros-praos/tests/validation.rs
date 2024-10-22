@@ -235,7 +235,7 @@ fn validation_conforms_to_test_vectors() {
     let result: Result<Vec<(GeneratorContext, MutatedHeader)>, serde_json::Error> =
         serde_json::from_reader(BufReader::new(file));
     // FIXME get slot coeff from context
-    let active_slots_coeff: FixedDecimal = FixedDecimal::from(5u64) / FixedDecimal::from(100u64);
+    let active_slots_coeff: FixedDecimal = FixedDecimal::from(1u64) / FixedDecimal::from(1u64);
     let c = (FixedDecimal::from(1u64) - active_slots_coeff).ln();
     assert!(result.is_ok());
     for test in result.unwrap().iter_mut() {
