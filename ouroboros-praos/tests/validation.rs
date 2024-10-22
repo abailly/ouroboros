@@ -1,10 +1,5 @@
 use std::{collections::HashMap, fs::File, io::BufReader};
 
-use base64::{
-    alphabet,
-    engine::{self, general_purpose},
-    Engine as _,
-};
 use ctor::ctor;
 use mockall::predicate::eq;
 use ouroboros::ledger::{MockLedgerState, PoolSigma};
@@ -77,9 +72,7 @@ where
     D: Deserializer<'de>,
 {
     let buf = <String>::deserialize(deserializer)?;
-    let bytes = general_purpose::STANDARD
-        .decode(buf)
-        .map_err(serde::de::Error::custom)?;
+    let bytes = hex::decode(buf).map_err(serde::de::Error::custom)?;
     Ok(KesKeyWrapper { bytes })
 }
 
@@ -88,9 +81,7 @@ where
     D: Deserializer<'de>,
 {
     let buf = <String>::deserialize(deserializer)?;
-    let decoded = general_purpose::STANDARD
-        .decode(buf)
-        .map_err(serde::de::Error::custom)?;
+    let decoded = hex::decode(buf).map_err(serde::de::Error::custom)?;
     let bytes: [u8; SecretKey::SIZE] = decoded.try_into().map_err(|e| {
         serde::de::Error::custom(format!("cannot convert vector to secret key: {:?}", e))
     })?;
@@ -102,9 +93,7 @@ where
     D: Deserializer<'de>,
 {
     let buf = <String>::deserialize(deserializer)?;
-    let decoded = general_purpose::STANDARD
-        .decode(buf)
-        .map_err(serde::de::Error::custom)?;
+    let decoded = hex::decode(buf).map_err(serde::de::Error::custom)?;
     let num_bytes = decoded.len();
     // FIXME: in the Haskell side, the signing key also contains the verification key which means
     // its serialised length its 64 bytes: https://github.com/IntersectMBO/cardano-base/blob/master/cardano-crypto-praos/src/Cardano/Crypto/VRF/Praos.hs#L134
@@ -126,9 +115,7 @@ where
     D: Deserializer<'de>,
 {
     let buf = <String>::deserialize(deserializer)?;
-    let decoded = general_purpose::STANDARD
-        .decode(buf)
-        .map_err(serde::de::Error::custom)?;
+    let decoded = hex::decode(buf).map_err(serde::de::Error::custom)?;
     let bytes = decoded.try_into().map_err(|e| {
         serde::de::Error::custom(format!("cannot convert vector to nonce: {:?}", e))
     })?;
@@ -159,9 +146,7 @@ where
     D: Deserializer<'de>,
 {
     let buf = <String>::deserialize(deserializer)?;
-    let bytes = general_purpose::STANDARD
-        .decode(buf)
-        .map_err(serde::de::Error::custom)?;
+    let bytes = hex::decode(buf).map_err(serde::de::Error::custom)?;
     Ok(HeaderWrapper { bytes })
 }
 
@@ -176,32 +161,34 @@ enum Mutation {
     MutateCounterUnder,
 }
 
-fn mock_ledger_state(
-    pool_id: Hash<28>,
-    numerator: u64,
-    denominator: u64,
-    vrf_vkey_hash: Hash<32>,
-) -> MockLedgerState {
+fn mock_ledger_state(context: &GeneratorContext) -> MockLedgerState {
     let mut ledger_state = MockLedgerState::new();
+    let pool_id = context.cold_secret_key.public_key().compute_hash();
+    // FIXME there's no method to derive a hash from a VRF pub key
+    let vrf_vkey_hash = context.vrf_vkey_hash;
+    let praos_slots_per_kes_period = context.praos_slots_per_kes_period;
+    let praos_max_kes_evolution = context.praos_max_kes_evolution;
+
     ledger_state
         .expect_pool_id_to_sigma()
         .with(eq(pool_id))
         .returning(move |_| {
+            // FIXME: add stake share to context
             Ok(PoolSigma {
-                numerator,
-                denominator,
+                denominator: 1,
+                numerator: 1,
             })
         });
     ledger_state
         .expect_vrf_vkey_hash()
         .with(eq(pool_id))
         .returning(move |_| Ok(vrf_vkey_hash));
-    ledger_state.expect_slot_to_kes_period().returning(|slot| {
-        // hardcode some values from shelley-genesis.json for the mock implementation
-        let slots_per_kes_period: u64 = 129600; // from shelley-genesis.json (1.5 days in seconds)
-        slot / slots_per_kes_period
-    });
-    ledger_state.expect_max_kes_evolutions().returning(|| 62);
+    ledger_state
+        .expect_slot_to_kes_period()
+        .returning(move |_| praos_slots_per_kes_period);
+    ledger_state
+        .expect_max_kes_evolutions()
+        .returning(move || praos_max_kes_evolution);
     ledger_state
         .expect_latest_opcert_sequence_number()
         .returning(|_| None);
@@ -226,7 +213,7 @@ fn can_read_and_write_json_test_vectors() {
     let mut vec = result.unwrap();
     let first_header = vec[0].1.header.get_header().expect("cannot create header");
     let babbage_header = first_header.as_babbage().expect("Infallible");
-    assert_eq!(babbage_header.header_body.slot, 17091886779185303104u64);
+    assert_eq!(babbage_header.header_body.slot, 7192334064880560135u64);
 }
 
 #[test]
@@ -246,11 +233,8 @@ fn validation_conforms_to_test_vectors() {
             .map(|hdr| {
                 let babbage_header = hdr.as_babbage().expect("cannot convert to babbage header");
                 let expected = &test.1.mutation;
-                let pool_id = context.cold_secret_key.public_key().compute_hash();
-                // FIXME there's no method to derive a hash from a VRF pub key
-                let vrf_vkey_hash = context.vrf_vkey_hash;
                 // FIXME 100% stake
-                let ledger_state = mock_ledger_state(pool_id, 1, 1, vrf_vkey_hash);
+                let ledger_state = mock_ledger_state(context);
                 let epoch_nonce = context.nonce;
                 let block_validator =
                     BlockValidator::new(babbage_header, &ledger_state, &epoch_nonce, &c);
