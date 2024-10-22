@@ -333,10 +333,10 @@ impl<'b> BlockValidator<'b> {
         trace!("block vrf_vkey_hash: {}", hex::encode(vrf_vkey_hash));
         let ledger_vrf_vkey_hash = self.ledger_state.vrf_vkey_hash(pool_id)?;
         if vrf_vkey_hash != ledger_vrf_vkey_hash {
-            return Err(ValidationError::InvalidVrfKeyForPool(
-                hex::encode(ledger_vrf_vkey_hash),
-                hex::encode(vrf_vkey),
-            ));
+            return Err(ValidationError::InvalidVrfKeyForPool {
+                key_hash_from_ledger: hex::encode(ledger_vrf_vkey_hash),
+                key_hash_from_block: hex::encode(vrf_vkey),
+            });
         }
         Ok(())
     }
