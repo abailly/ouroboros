@@ -5,11 +5,20 @@ use base64::{
     engine::{self, general_purpose},
     Engine as _,
 };
-use pallas_crypto::key::ed25519::SecretKey;
-use pallas_crypto::vrf::VrfSecretKey;
+use ctor::ctor;
+use mockall::predicate::eq;
+use ouroboros::ledger::{MockLedgerState, PoolSigma};
+use ouroboros::validator::Validator;
+use ouroboros_praos::consensus::BlockValidator;
 use pallas_crypto::{hash::Hash, vrf::VrfSecretKeyBytes};
+use pallas_crypto::{
+    hash::Hasher,
+    vrf::{VrfPublicKey, VrfSecretKey},
+};
 use pallas_crypto::{kes::KesSecretKey, vrf::VRF_SECRET_KEY_SIZE};
-use pallas_traverse::MultiEraHeader;
+use pallas_crypto::{key::ed25519::SecretKey, vrf::VrfPublicKeyBytes};
+use pallas_math::math::{FixedDecimal, FixedPrecision};
+use pallas_traverse::{ComputeHash, MultiEraHeader};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Deserialize)]
@@ -25,10 +34,10 @@ struct GeneratorContext {
         deserialize_with = "deserialize_secret_ed25519_key"
     )]
     cold_secret_key: SecretKey,
-    #[serde(rename = "vrfSignKey", deserialize_with = "deserialize_secret_vrf_key")]
-    vrf_secret_key: VrfSecretKey,
+    #[serde(rename = "vrfVKeyHash", deserialize_with = "deserialize_vrf_vkey_hash")]
+    vrf_vkey_hash: Hash<32>,
     #[serde(deserialize_with = "deserialize_nonce")]
-    nonce: [u8; 32],
+    nonce: Hash<32>,
     #[serde(rename = "ocertCounters")]
     operational_certificate_counters: HashMap<Hash<28>, u64>,
 }
@@ -88,7 +97,7 @@ where
     Ok(bytes.into())
 }
 
-fn deserialize_secret_vrf_key<'de, D>(deserializer: D) -> Result<VrfSecretKey, D::Error>
+fn deserialize_vrf_vkey_hash<'de, D>(deserializer: D) -> Result<Hash<32>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -103,17 +112,16 @@ where
     // second half.
     // fixing Haskell side is annoying because it uses C FFI and only manipulate keys
     // through opaque pointers.
-    let bytes: [u8; 64] = decoded.try_into().map_err(|e| {
+    let bytes: [u8; 32] = decoded.try_into().map_err(|e| {
         serde::de::Error::custom(format!(
-            "cannot convert vector to secret vrf key (len = {}): {:?}",
+            "cannot convert vector to secret vrf key hash (len = {}): {:?}",
             num_bytes, e
         ))
     })?;
-    let skbytes: VrfSecretKeyBytes = bytes[0..32].try_into().map_err(serde::de::Error::custom)?;
-    Ok((&skbytes).into())
+    Ok(Hash::new(bytes))
 }
 
-fn deserialize_nonce<'de, D>(deserializer: D) -> Result<[u8; 32], D::Error>
+fn deserialize_nonce<'de, D>(deserializer: D) -> Result<Hash<32>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -121,9 +129,10 @@ where
     let decoded = general_purpose::STANDARD
         .decode(buf)
         .map_err(serde::de::Error::custom)?;
-    decoded
-        .try_into()
-        .map_err(|e| serde::de::Error::custom(format!("cannot convert vector to nonce: {:?}", e)))
+    let bytes = decoded.try_into().map_err(|e| {
+        serde::de::Error::custom(format!("cannot convert vector to nonce: {:?}", e))
+    })?;
+    Ok(Hash::new(bytes))
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,17 +176,94 @@ enum Mutation {
     MutateCounterUnder,
 }
 
+fn mock_ledger_state(
+    pool_id: Hash<28>,
+    numerator: u64,
+    denominator: u64,
+    vrf_vkey_hash: Hash<32>,
+) -> MockLedgerState {
+    let mut ledger_state = MockLedgerState::new();
+    ledger_state
+        .expect_pool_id_to_sigma()
+        .with(eq(pool_id))
+        .returning(move |_| {
+            Ok(PoolSigma {
+                numerator,
+                denominator,
+            })
+        });
+    ledger_state
+        .expect_vrf_vkey_hash()
+        .with(eq(pool_id))
+        .returning(move |_| Ok(vrf_vkey_hash));
+    ledger_state.expect_slot_to_kes_period().returning(|slot| {
+        // hardcode some values from shelley-genesis.json for the mock implementation
+        let slots_per_kes_period: u64 = 129600; // from shelley-genesis.json (1.5 days in seconds)
+        slot / slots_per_kes_period
+    });
+    ledger_state.expect_max_kes_evolutions().returning(|| 62);
+    ledger_state
+        .expect_latest_opcert_sequence_number()
+        .returning(|_| None);
+    ledger_state
+}
+
+#[ctor]
+fn init() {
+    // set rust log level to TRACE
+    std::env::set_var("RUST_LOG", "trace");
+    // initialize tracing crate
+    tracing_subscriber::fmt::init();
+}
+
 #[test]
 fn can_read_and_write_json_test_vectors() {
     let file = File::open("tests/data/test-vector.json").unwrap();
     let result: Result<Vec<(GeneratorContext, MutatedHeader)>, serde_json::Error> =
         serde_json::from_reader(BufReader::new(file));
+    println!("result {:?}", result);
     assert!(result.is_ok());
     let mut vec = result.unwrap();
     let first_header = vec[0].1.header.get_header().expect("cannot create header");
     let babbage_header = first_header.as_babbage().expect("Infallible");
-    assert_eq!(babbage_header.header_body.slot, 6217870661159068565u64);
+    assert_eq!(babbage_header.header_body.slot, 17091886779185303104u64);
 }
 
 #[test]
-fn validation_conforms_to_test_vectors() {}
+fn validation_conforms_to_test_vectors() {
+    let file = File::open("tests/data/test-vector.json").unwrap();
+    let result: Result<Vec<(GeneratorContext, MutatedHeader)>, serde_json::Error> =
+        serde_json::from_reader(BufReader::new(file));
+    // FIXME get slot coeff from context
+    let active_slots_coeff: FixedDecimal = FixedDecimal::from(5u64) / FixedDecimal::from(100u64);
+    let c = (FixedDecimal::from(1u64) - active_slots_coeff).ln();
+    assert!(result.is_ok());
+    for test in result.unwrap().iter_mut() {
+        let context = &test.0;
+        test.1
+            .header
+            .get_header()
+            .map(|hdr| {
+                let babbage_header = hdr.as_babbage().expect("cannot convert to babbage header");
+                let expected = &test.1.mutation;
+                let pool_id = context.cold_secret_key.public_key().compute_hash();
+                // FIXME there's no method to derive a hash from a VRF pub key
+                let vrf_vkey_hash = context.vrf_vkey_hash;
+                // FIXME 100% stake
+                let ledger_state = mock_ledger_state(pool_id, 1, 1, vrf_vkey_hash);
+                let epoch_nonce = context.nonce;
+                let block_validator =
+                    BlockValidator::new(babbage_header, &ledger_state, &epoch_nonce, &c);
+                let valid_result = block_validator.validate();
+                match (expected, valid_result) {
+                    (Mutation::NoMutation, Ok(_)) => (),
+                    (Mutation::NoMutation, Err(e)) => {
+                        panic!("expected validation to succeed, failed with error  {:?}", e)
+                    }
+                    (_, Ok(_)) => panic!("expected validation to fail, but it succeeded"),
+                    (_, Err(_)) => (),
+                }
+            })
+            .expect("cannot create header");
+    }
+}
