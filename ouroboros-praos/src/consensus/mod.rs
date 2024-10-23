@@ -138,10 +138,10 @@ impl<'b> BlockValidator<'b> {
             .operational_cert_kes_period;
 
         if opcert_kes_period > slot_kes_period {
-            return Err(ValidationError::KesVerificationError(
-                "Operational Certificate KES period is greater than the block slot KES period!"
-                    .to_string(),
-            ));
+            return Err(ValidationError::OpCertKesPeriodTooLarge {
+                opcert_kes_period,
+                slot_kes_period,
+            });
         }
         if slot_kes_period >= opcert_kes_period + self.ledger_state.max_kes_evolutions() {
             return Err(ValidationError::KesVerificationError(

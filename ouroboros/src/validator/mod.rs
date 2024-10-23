@@ -27,6 +27,11 @@ pub enum ValidationError {
     InvalidOpcertSignature,
     #[error("KesVerificationError: {0}")]
     KesVerificationError(String),
+    #[error("Operational Certificate KES period ({opcert_kes_period}) is greater than the block slot KES period ({slot_kes_period})!")]
+    OpCertKesPeriodTooLarge {
+        opcert_kes_period: u64,
+        slot_kes_period: u64,
+    },
     #[error("InsufficientPoolStake")]
     InsufficientPoolStake,
 }
