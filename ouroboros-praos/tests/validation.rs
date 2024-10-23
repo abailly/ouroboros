@@ -35,6 +35,8 @@ struct GeneratorContext {
     nonce: Hash<32>,
     #[serde(rename = "ocertCounters")]
     operational_certificate_counters: HashMap<Hash<28>, u64>,
+    #[serde(rename = "activeSlotCoeff")]
+    active_slot_coeff : f64
 }
 
 impl std::fmt::Debug for GeneratorContext {
@@ -51,7 +53,7 @@ impl std::fmt::Debug for GeneratorContext {
             .field(
                 "operational_certificate_counters",
                 &self.operational_certificate_counters,
-            )
+            ).field("active_slot_coeff", &self.active_slot_coeff)
             .finish()
     }
 }
@@ -210,7 +212,7 @@ fn can_read_and_write_json_test_vectors() {
     let mut vec = result.unwrap();
     let first_header = vec[0].1.header.get_header().expect("cannot create header");
     let babbage_header = first_header.as_babbage().expect("Infallible");
-    assert_eq!(babbage_header.header_body.slot, 14658858829352290893u64);
+    assert_eq!(babbage_header.header_body.slot, 11501496258745936672u64);
 }
 
 #[test]
@@ -218,33 +220,44 @@ fn validation_conforms_to_test_vectors() {
     let file = File::open("tests/data/test-vector.json").unwrap();
     let result: Result<Vec<(GeneratorContext, MutatedHeader)>, serde_json::Error> =
         serde_json::from_reader(BufReader::new(file));
-    // FIXME get slot coeff from context
-    let active_slots_coeff: FixedDecimal = FixedDecimal::from(1u64) / FixedDecimal::from(1u64);
-    let c = (FixedDecimal::from(1u64) - active_slots_coeff).ln();
     assert!(result.is_ok());
-    for test in result.unwrap().iter_mut() {
-        let context = &test.0;
-        test.1
-            .header
-            .get_header()
-            .map(|hdr| {
-                let babbage_header = hdr.as_babbage().expect("cannot convert to babbage header");
-                let expected = &test.1.mutation;
-                // FIXME 100% stake
-                let ledger_state = mock_ledger_state(context);
-                let epoch_nonce = context.nonce;
-                let block_validator =
-                    BlockValidator::new(babbage_header, &ledger_state, &epoch_nonce, &c);
-                let valid_result = block_validator.validate();
-                match (expected, valid_result) {
-                    (Mutation::NoMutation, Ok(_)) => (),
-                    (Mutation::NoMutation, Err(e)) => {
-                        panic!("expected validation to succeed, failed with error  {:?}", e)
+    result
+        .unwrap()
+        .iter_mut()
+        .enumerate()
+        .for_each(|(i, test)| {
+            let context = &test.0;
+            test.1
+                .header
+                .get_header()
+                .map(|hdr| {
+                    let babbage_header =
+                        hdr.as_babbage().expect("cannot convert to babbage header");
+                    let expected = &test.1.mutation;
+                    // FIXME 100% stake
+                    let ledger_state = mock_ledger_state(context);
+                    let epoch_nonce = context.nonce;
+                    let active_slot_coeff = FixedDecimal::from((context.active_slot_coeff * 100.0) as u64) / FixedDecimal::from(100u64);
+                    let block_validator =
+                        BlockValidator::new(babbage_header, &ledger_state, &epoch_nonce, &active_slot_coeff);
+                    let valid_result = block_validator.validate();
+                    match (expected, valid_result) {
+                        (Mutation::NoMutation, Ok(_)) => (),
+                        (Mutation::NoMutation, Err(e)) => {
+                            panic!(
+                                "[{}] expected validation to succeed, failed with error {:?}\n header: {:?}\n context: {:?}",
+                                i, e, babbage_header, context
+                            )
+                        }
+                        (_, Ok(_)) => {
+                            panic!(
+                                "[{}] expected validation to fail ({:?}), but it succeeded",
+                                i, expected
+                            )
+                        }
+                        (_, Err(_)) => (),
                     }
-                    (_, Ok(_)) => panic!("expected validation to fail, but it succeeded"),
-                    (_, Err(_)) => (),
-                }
-            })
-            .expect("cannot create header");
-    }
+                })
+                .expect("cannot create header");
+        });
 }
