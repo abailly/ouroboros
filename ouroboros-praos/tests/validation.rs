@@ -185,7 +185,7 @@ fn mock_ledger_state(context: &GeneratorContext) -> MockLedgerState {
         .returning(move |_| Ok(vrf_vkey_hash));
     ledger_state
         .expect_slot_to_kes_period()
-        .returning(move |_| praos_slots_per_kes_period);
+        .returning(move |slot| slot / praos_slots_per_kes_period);
     ledger_state
         .expect_max_kes_evolutions()
         .returning(move || praos_max_kes_evolution);
@@ -197,8 +197,6 @@ fn mock_ledger_state(context: &GeneratorContext) -> MockLedgerState {
 
 #[ctor]
 fn init() {
-    // set rust log level to TRACE
-    std::env::set_var("RUST_LOG", "trace");
     // initialize tracing crate
     tracing_subscriber::fmt::init();
 }
@@ -208,12 +206,11 @@ fn can_read_and_write_json_test_vectors() {
     let file = File::open("tests/data/test-vector.json").unwrap();
     let result: Result<Vec<(GeneratorContext, MutatedHeader)>, serde_json::Error> =
         serde_json::from_reader(BufReader::new(file));
-    println!("result {:?}", result);
     assert!(result.is_ok());
     let mut vec = result.unwrap();
     let first_header = vec[0].1.header.get_header().expect("cannot create header");
     let babbage_header = first_header.as_babbage().expect("Infallible");
-    assert_eq!(babbage_header.header_body.slot, 7192334064880560135u64);
+    assert_eq!(babbage_header.header_body.slot, 14658858829352290893u64);
 }
 
 #[test]
