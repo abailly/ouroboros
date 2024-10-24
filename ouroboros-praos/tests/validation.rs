@@ -12,6 +12,23 @@ use pallas_math::math::FixedDecimal;
 use pallas_traverse::{ComputeHash, MultiEraHeader};
 use serde::{Deserialize, Deserializer, Serialize};
 
+/// Context from which a header has been generated.
+///
+/// The context provides extra information needed to validate a
+/// header, like the nonce, the operational certificate counters, etc.
+/// It also provides secret keys that were used to sign the header and
+/// produce the VRF output, in order to help troubleshoot the
+/// validation process in case of test failures.
+///
+/// This context and the associated `MutatedHeader` are generated from
+/// Haskell code and validated with [ouroboros-consensus]() code. There
+/// is [PR]() in the making to integrate the generator into the consensus
+/// codebase and provide a standalone executable to generate and validate
+/// arbitrary headers.
+///
+/// TODO: The stake distribution should be added to the context, the
+/// tester currently assumes the pool signing the header as 100% of the
+/// stake.
 #[derive(Deserialize)]
 struct GeneratorContext {
     #[serde(rename = "praosSlotsPerKESPeriod")]
@@ -209,6 +226,7 @@ fn can_read_and_write_json_test_vectors() {
     let mut vec = result.unwrap();
     let first_header = vec[0].1.header.get_header().expect("cannot create header");
     let babbage_header = first_header.as_babbage().expect("Infallible");
+    // NOTE: this magic number ensures that we read an up-to-date test vector
     assert_eq!(babbage_header.header_body.slot, 9169164218553922239u64);
 }
 
@@ -221,7 +239,7 @@ fn validation_conforms_to_test_vectors() {
         .expect("cannot deserialize test vectors")
         .iter_mut()
         .enumerate()
-        .for_each(|(i, test)| {
+        .for_each(|(header_index, test)| {
             let context = &test.0;
             test.1
                 .header
@@ -242,13 +260,13 @@ fn validation_conforms_to_test_vectors() {
                         (Mutation::NoMutation, Err(e)) => {
                             panic!(
                                 "[{}] expected validation to succeed, failed with error {:?}\n header: {:?}\n context: {:?}",
-                                i, e, babbage_header, context
+                                header_index, e, babbage_header, context
                             )
                         }
                         (_, Ok(_)) => {
                             panic!(
-                                "[{}] expected validation to fail ({:?}), but it succeeded",
-                                i, expected
+                                "[{}] expected validation to fail ({:?}), but it succeeded\n header: {:?}\n context: {:?}",
+                                header_index, expected, babbage_header, context
                             )
                         }
                         (_, Err(_)) => (),
