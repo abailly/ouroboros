@@ -28,8 +28,7 @@ pub struct BlockValidator<'b> {
     header: &'b babbage::MintedHeader<'b>,
     ledger_state: &'b dyn LedgerState,
     epoch_nonce: &'b Hash<32>,
-    // c is the ln(1-active_slots_coeff). Usually ln(1-0.05)
-    c: &'b FixedDecimal,
+    active_slots_coeff: &'b FixedDecimal,
 }
 
 impl<'b> BlockValidator<'b> {
@@ -37,13 +36,13 @@ impl<'b> BlockValidator<'b> {
         header: &'b babbage::MintedHeader,
         ledger_state: &'b dyn LedgerState,
         epoch_nonce: &'b Hash<32>,
-        c: &'b FixedDecimal,
+        active_slots_coeff: &'b FixedDecimal,
     ) -> Self {
         Self {
             header,
             ledger_state,
             epoch_nonce,
-            c,
+            active_slots_coeff,
         }
     }
 
@@ -289,15 +288,22 @@ impl<'b> BlockValidator<'b> {
         absolute_slot: u64,
         leader_vrf_output: &[u8],
     ) -> Result<(), ValidationError> {
+        // special case for testing purposes
+        if self.active_slots_coeff == &FixedDecimal::from(1u64) {
+            return Ok(());
+        }
+
         let certified_leader_vrf: FixedDecimal = leader_vrf_output.into();
         let denominator = CERTIFIED_NATURAL_MAX.deref() - &certified_leader_vrf;
         let recip_q = CERTIFIED_NATURAL_MAX.deref() / &denominator;
-        let x = -(sigma * self.c);
+        let c = (FixedDecimal::from(1u64) - self.active_slots_coeff.clone()).ln();
+        let x = -(sigma * &c);
 
+        trace!("leader_vrf_output: {}", hex::encode(leader_vrf_output));
         trace!("certified_leader_vrf: {}", certified_leader_vrf);
         trace!("denominator: {}", denominator);
         trace!("recip_q: {}", recip_q);
-        trace!("c: {}", self.c);
+        trace!("active_slots_coeff: {}", self.active_slots_coeff);
         trace!("x: {}", x);
 
         let ordering = x.exp_cmp(1000, 3, &recip_q);
@@ -409,7 +415,6 @@ mod tests {
 
             let active_slots_coeff: FixedDecimal =
                 FixedDecimal::from(5u64) / FixedDecimal::from(100u64);
-            let c = (FixedDecimal::from(1u64) - active_slots_coeff).ln();
             let conway_block_tag: u8 = 6;
             let multi_era_header =
                 MultiEraHeader::decode(conway_block_tag, None, test_block).unwrap();
@@ -441,7 +446,7 @@ mod tests {
                 .returning(|_| None);
 
             let block_validator =
-                BlockValidator::new(babbage_header, &ledger_state, &epoch_nonce, &c);
+                BlockValidator::new(babbage_header, &ledger_state, &epoch_nonce, &active_slots_coeff);
             assert_eq!(block_validator.validate().is_ok(), expected);
         }
     }
