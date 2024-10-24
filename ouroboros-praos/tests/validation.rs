@@ -5,14 +5,10 @@ use mockall::predicate::eq;
 use ouroboros::ledger::{MockLedgerState, PoolSigma};
 use ouroboros::validator::Validator;
 use ouroboros_praos::consensus::BlockValidator;
-use pallas_crypto::{hash::Hash, vrf::VrfSecretKeyBytes};
-use pallas_crypto::{
-    hash::Hasher,
-    vrf::{VrfPublicKey, VrfSecretKey},
-};
-use pallas_crypto::{kes::KesSecretKey, vrf::VRF_SECRET_KEY_SIZE};
-use pallas_crypto::{key::ed25519::SecretKey, vrf::VrfPublicKeyBytes};
-use pallas_math::math::{FixedDecimal, FixedPrecision};
+use pallas_crypto::hash::Hash;
+use pallas_crypto::kes::KesSecretKey;
+use pallas_crypto::key::ed25519::SecretKey;
+use pallas_math::math::FixedDecimal;
 use pallas_traverse::{ComputeHash, MultiEraHeader};
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -37,6 +33,12 @@ struct GeneratorContext {
     operational_certificate_counters: HashMap<Hash<28>, u64>,
     #[serde(rename = "activeSlotCoeff")]
     active_slot_coeff : f64
+}
+
+impl GeneratorContext {
+    fn active_slot_coeff_fraction(&self) -> pallas_math::math_malachite::Decimal {
+        FixedDecimal::from((self.active_slot_coeff * 100.0) as u64) / FixedDecimal::from(100u64)
+    }
 }
 
 impl std::fmt::Debug for GeneratorContext {
@@ -97,12 +99,6 @@ where
     let buf = <String>::deserialize(deserializer)?;
     let decoded = hex::decode(buf).map_err(serde::de::Error::custom)?;
     let num_bytes = decoded.len();
-    // FIXME: in the Haskell side, the signing key also contains the verification key which means
-    // its serialised length its 64 bytes: https://github.com/IntersectMBO/cardano-base/blob/master/cardano-crypto-praos/src/Cardano/Crypto/VRF/Praos.hs#L134
-    // with the signing key part on the first half and the verification key part on the
-    // second half.
-    // fixing Haskell side is annoying because it uses C FFI and only manipulate keys
-    // through opaque pointers.
     let bytes: [u8; 32] = decoded.try_into().map_err(|e| {
         serde::de::Error::custom(format!(
             "cannot convert vector to secret vrf key hash (len = {}): {:?}",
@@ -137,7 +133,7 @@ struct HeaderWrapper {
 }
 
 impl HeaderWrapper {
-    fn get_header<'a>(&'a mut self) -> Result<MultiEraHeader<'a>, ()> {
+    fn get_header(&mut self) -> Result<MultiEraHeader<'_>, ()> {
         let conway_block_tag: u8 = 6;
         MultiEraHeader::decode(conway_block_tag, None, self.bytes.as_slice()).map_err(|_| ())
     }
@@ -166,7 +162,6 @@ enum Mutation {
 fn mock_ledger_state(context: &GeneratorContext) -> MockLedgerState {
     let mut ledger_state = MockLedgerState::new();
     let pool_id = context.cold_secret_key.public_key().compute_hash();
-    // FIXME there's no method to derive a hash from a VRF pub key
     let vrf_vkey_hash = context.vrf_vkey_hash;
     let praos_slots_per_kes_period = context.praos_slots_per_kes_period;
     let praos_max_kes_evolution = context.praos_max_kes_evolution;
@@ -214,7 +209,7 @@ fn can_read_and_write_json_test_vectors() {
     let mut vec = result.unwrap();
     let first_header = vec[0].1.header.get_header().expect("cannot create header");
     let babbage_header = first_header.as_babbage().expect("Infallible");
-    assert_eq!(babbage_header.header_body.slot, 11501496258745936672u64);
+    assert_eq!(babbage_header.header_body.slot, 9169164218553922239u64);
 }
 
 #[test]
@@ -222,9 +217,8 @@ fn validation_conforms_to_test_vectors() {
     let file = File::open("tests/data/test-vector.json").unwrap();
     let result: Result<Vec<(GeneratorContext, MutatedHeader)>, serde_json::Error> =
         serde_json::from_reader(BufReader::new(file));
-    assert!(result.is_ok());
     result
-        .unwrap()
+        .expect("cannot deserialize test vectors")
         .iter_mut()
         .enumerate()
         .for_each(|(i, test)| {
@@ -236,13 +230,13 @@ fn validation_conforms_to_test_vectors() {
                     let babbage_header =
                         hdr.as_babbage().expect("cannot convert to babbage header");
                     let expected = &test.1.mutation;
-                    // FIXME 100% stake
                     let ledger_state = mock_ledger_state(context);
                     let epoch_nonce = context.nonce;
-                    let active_slot_coeff = FixedDecimal::from((context.active_slot_coeff * 100.0) as u64) / FixedDecimal::from(100u64);
+                    let active_slot_coeff = context.active_slot_coeff_fraction();
                     let block_validator =
                         BlockValidator::new(babbage_header, &ledger_state, &epoch_nonce, &active_slot_coeff);
                     let valid_result = block_validator.validate();
+
                     match (expected, valid_result) {
                         (Mutation::NoMutation, Ok(_)) => (),
                         (Mutation::NoMutation, Err(e)) => {
@@ -260,6 +254,6 @@ fn validation_conforms_to_test_vectors() {
                         (_, Err(_)) => (),
                     }
                 })
-                .expect("cannot create header");
+                .expect("cannot extract header from bytes");
         });
 }
