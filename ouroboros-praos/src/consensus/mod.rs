@@ -103,7 +103,7 @@ impl<'b> BlockValidator<'b> {
                     &block_vrf_proof,
                 )
             }),
-            Box::new(|| self.validate_operational_certificate(issuer_vkey.as_slice())),
+            Box::new(|| self.validate_operational_certificate(issuer_vkey.as_slice(), &pool_id)),
             Box::new(|| self.validate_kes_signature(absolute_slot, kes_signature)),
         ];
 
@@ -168,7 +168,7 @@ impl<'b> BlockValidator<'b> {
             })
     }
 
-    fn validate_operational_certificate(&self, issuer_vkey: &[u8]) -> Result<(), ValidationError> {
+    fn validate_operational_certificate(&self, issuer_vkey: &[u8], pool_id: &PoolId) -> Result<(), ValidationError> {
         // Verify the Operational Certificate signature
         let opcert_signature = Signature::try_from(
             self.header
@@ -191,12 +191,12 @@ impl<'b> BlockValidator<'b> {
 
         // Check the sequence number of the operational certificate. It should either be the same
         // as the latest known sequence number for the issuer_vkey or one greater.
-        match self.ledger_state.latest_opcert_sequence_number(issuer_vkey) {
+        match self.ledger_state.latest_opcert_sequence_number(pool_id) {
             Some(latest_opcert_sequence_number) => {
-                if (opcert_sequence_number - latest_opcert_sequence_number) > 1 {
-                    return Err(ValidationError::InvalidOpcertSequenceNumber("Operational Certificate sequence number is too far ahead of the latest known sequence number!".to_string()));
-                } else if opcert_sequence_number < latest_opcert_sequence_number {
+                if opcert_sequence_number < latest_opcert_sequence_number {
                     return Err(ValidationError::InvalidOpcertSequenceNumber("Operational Certificate sequence number is less than the latest known sequence number!".to_string()));
+                } else if (opcert_sequence_number - latest_opcert_sequence_number) > 1 {
+                    return Err(ValidationError::InvalidOpcertSequenceNumber("Operational Certificate sequence number is too far ahead of the latest known sequence number!".to_string()));
                 }
                 trace!("Operational Certificate sequence number is ok.")
             }

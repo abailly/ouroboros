@@ -170,6 +170,7 @@ fn mock_ledger_state(context: &GeneratorContext) -> MockLedgerState {
     let vrf_vkey_hash = context.vrf_vkey_hash;
     let praos_slots_per_kes_period = context.praos_slots_per_kes_period;
     let praos_max_kes_evolution = context.praos_max_kes_evolution;
+    let opcert_counter = context.operational_certificate_counters.get(&pool_id).copied().or(None);
 
     ledger_state
         .expect_pool_id_to_sigma()
@@ -193,7 +194,8 @@ fn mock_ledger_state(context: &GeneratorContext) -> MockLedgerState {
         .returning(move || praos_max_kes_evolution);
     ledger_state
         .expect_latest_opcert_sequence_number()
-        .returning(|_| None);
+        .with(eq(pool_id))
+        .returning(move |_| opcert_counter);
     ledger_state
 }
 
